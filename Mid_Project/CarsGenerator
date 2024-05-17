@@ -1,0 +1,29 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, LongType
+import random
+
+spark = SparkSession \
+    .builder \
+    .master("local")\
+    .appName('colors') \
+    .getOrCreate()
+
+
+schema = StructType([
+    StructField('car_id', StringType(), True),
+    StructField('driver_id', LongType(), True),
+    StructField('model_id', IntegerType(), True),
+    StructField('color_id', IntegerType(), True)
+])
+
+data = [(random.randint(1000000, 9999999), 
+         random.randint(100000000, 999999999), 
+         random.randint(1, 7), 
+         random.randint(1, 7)) 
+        for _ in range(20)]
+
+cars_df = spark.createDataFrame(data, schema)
+cars_df.write.parquet('s3a://mid.project/ex1_parquet/CarsGenerator/', mode='overwrite')
+cars_df.show()
+
+spark.stop()
