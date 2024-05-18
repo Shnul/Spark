@@ -1,0 +1,96 @@
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql import types as T
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, LongType
+
+car_models_schema =  StructType([
+    StructField("model_id", IntegerType(), True),
+    StructField("car_brand", StringType(), True),
+    StructField("car_model", StringType(), True)
+])
+
+car_colors_schema = StructType([
+    StructField("color_id", IntegerType(), True),
+    StructField("color_name", StringType(), True)
+])
+ 
+cars_schema = StructType([
+    StructField('car_id', IntegerType(), True),
+    StructField('driver_id', LongType(), True),
+    StructField('model_id', IntegerType(), True),
+    StructField('color_id', IntegerType(), True)
+])
+
+main_schema = StructType([
+    StructField("car_id", IntegerType()), 
+    StructField("driver_id", LongType()),
+    StructField("model_id", IntegerType()),
+    StructField("color_id", IntegerType()),
+    StructField("event_id", StringType()),
+    StructField("event_time", StringType()),
+    StructField("speed", IntegerType()),
+    StructField("rpm", IntegerType()),
+    StructField("gear", IntegerType())
+])
+
+spark = SparkSession\
+    .builder\
+    .master("local[*]")\
+    .appName('DataEnrichment')\
+    .config('spark.jars.packages', 'org.apache.spark:spark-sql-kafka-0-10_2.12:3.1.2') \
+    .getOrCreate()   
+
+car_colors_df = spark.read\
+            .schema(car_colors_schema)\
+            .parquet('s3a://mid.project/ex1_parquet/car_colors')
+
+
+car_models_df = spark.read\
+            .schema(car_models_schema)\
+            .parquet('s3a://mid.project/ex1_parquet/car_models')
+
+
+cars_df = spark.read\
+            .schema(cars_schema)\
+            .parquet('s3a://mid.project/ex1_parquet/CarsGenerator')
+
+
+stream_df = spark\
+    .readStream\
+    .format('kafka')\
+    .option("kafka.bootstrap.servers", "course-kafka:9092")\
+    .option("subscribe", "sensors")\
+    .option('startingOffsets', 'latest')\
+    .load()\
+    .select(F.col('value').cast(T.StringType()))
+
+
+parsed_df = stream_df.select(F.from_json(F.col('value'), main_schema).alias('parsed'))\
+                     .select('parsed.*')\
+                     .withColumnRenamed('car_id', 'parsed_car_id')\
+                     .withColumnRenamed('driver_id', 'parsed_driver_id')
+
+joined_df = parsed_df.join(F.broadcast(cars_df), parsed_df.parsed_car_id == cars_df.car_id) \
+                     .join(F.broadcast(car_models_df), 'model_id') \
+                     .join(F.broadcast(car_colors_df), 'color_id')
+
+final_joined_df = joined_df.select('event_id', 'event_time', 'parsed_car_id', 'parsed_driver_id', 'car_brand', 'car_model', 'color_name', 'speed', 'rpm', 'gear')
+
+enriched_df = final_joined_df.withColumn('expected_gear', F.ceil(F.col('speed')/ F.lit(30.0)).cast('int'))
+
+
+query = enriched_df.selectExpr("to_json(struct(*)) AS value") \
+    .writeStream \
+    .format('kafka') \
+    .option("kafka.bootstrap.servers", "course-kafka:9092") \
+    .option("topic", "samples-enriched") \
+    .option("failOnDataLoss", "false") \
+    .option("checkpointLocation", "s3a://mid.project/checkpoints/checkpoint_5") \
+    .outputMode('append') \
+    .start()
+
+
+
+query.awaitTermination()
+
+spark.stop()
