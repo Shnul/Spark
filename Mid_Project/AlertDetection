@@ -38,17 +38,22 @@ parsed_df = stream_df.withColumn('parsed_json', F.from_json(F.col('value'), aler
                     .select(F.col('parsed_json.*'))
 
 
-filterd_df = parsed_df.filter((F.col('speed') > 120))#\
-#                    | (F.col('gear') != F.col('expected_gear')) \
-#                    | (F.col('rpm') > 6000))
+filterd_df = parsed_df.filter((F.col('speed') > 120) & 
+                              (F.col('gear') != F.col('expected_gear')) & 
+                              (F.col('rpm') > 6000))
 
 
-query = parsed_df \
+
+kafka_query = filterd_df.selectExpr("to_json(struct(*)) AS value") \
     .writeStream \
-    .outputMode("append") \
-    .format("console") \
+    .format('kafka') \
+    .option("kafka.bootstrap.servers", "course-kafka:9092") \
+    .option("topic", "alert-data") \
+    .option("failOnDataLoss", "false") \
+    .option("checkpointLocation", "s3a://mid.project/checkpoints2") \
+    .outputMode('append') \
     .start()
 
-query.awaitTermination()
+kafka_query.awaitTermination()
 
 spark.stop()
